@@ -40,10 +40,5 @@ def _find_edi_837_files(path: str) -> List[str]:
 	return files
 
 
-def main():
-	data = parse('~/Desktop/eobs').to_dataframe()
-	data.to_csv('~/Desktop/transaction_sets.csv')
-
-
-if __name__ == '__main__':
-	main()
+# Package can be imported and used programmatically
+# Main execution should use extract_edi_837_business_format.py
