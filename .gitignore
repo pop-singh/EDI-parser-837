@@ -1,0 +1,33 @@
+# Output files - exclude from repository
+*.csv
+*.json
+edi_837_business_format.*
+EDI_Claims_Output.*
+EDI_ClaimDetail_Output.*
+COMPANY_SETUP_Output.*
+edi_837_complete_business_format.*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
