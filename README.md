@@ -16,21 +16,7 @@ The EDI 837 parser is a tool developed to efficiently extract and interpret data
 - **Output Format**: Extracted data can be outputted in CSV format.
 - **Customization**: Users can customize the parser according to specific requirements, adding support for additional segments or refining parsing logic.
 
-## Getting Started
 
-To use the EDI 837 parser, follow these steps:
 
-1. **Clone the Repository**: Clone this repository to your local machine
-2. **Usage**: First, open the _init_.py file located in the edi_837_parser directory. Then, within the main function, modify the following lines:
-   ```python
-    data = parse('~/Desktop/eobs').to_dataframe()
-    data.to_csv('~/Desktop/transaction_sets.csv')
-   ```
-   Ensure that you replace '/Desktop/eobs' with the path to your input folder containing the EDI files, and '/Desktop/' with the path to your desired output folder.
-3. **Customization**: If required, customize the parser to suit your specific use case by modifying the source code and adding or modifying parsing logic.
 
-## Contributing
-Contributions to the EDI 837 parser are welcome! If you encounter any issues, have feature requests, or would like to contribute enhancements, please feel free to open an issue or submit a pull request.
 
-**Special Thanks**  
-I would like to express my deepest gratitude to [keironstoddart](https://github.com/keironstoddart/edi-835-parser/tree/main) for their invaluable contributions and inspiration that served as the foundation for this project.

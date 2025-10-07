@@ -1,33 +1,32 @@
-# Output files - exclude from repository
-*.csv
-*.json
-edi_837_business_format.*
-EDI_Claims_Output.*
-EDI_ClaimDetail_Output.*
-COMPANY_SETUP_Output.*
-edi_837_complete_business_format.*
+# EDI data files and directories
+TOIH_ClaimsExport_957174*
+*.d
+*.edi
 
-# Python cache
+# Output files
+edi_837_business_format.json
+edi_837_business_format.csv
+edi_837_complete_business_format.csv
+EDI_Claims_Output.csv
+EDI_ClaimDetail_Output.csv
+COMPANY_SETUP_Output.csv
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-*.so
+env/
+venv/
+.venv/
 
-# IDE files
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-
-# Log files
-*.log
-
-# Temporary files
-*.tmp
-*.temp
