@@ -11,6 +11,16 @@ import pandas as pd
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
+# Import configuration
+try:
+    from config import EDI_DIRECTORY, MAX_FILES, EDI_FILE_EXTENSIONS
+except ImportError:
+    print("Warning: config.py not found. Using default settings.")
+    EDI_DIRECTORY = None
+    MAX_FILES = 1000
+    EDI_FILE_EXTENSIONS = ('.d', '.edi', '.txt', '.x12')
+    EDI_FILE_EXTENSIONS = ('.d', '.edi', '.txt', '.x12')
+
 class EDI837BusinessParser:
     def __init__(self):
         # Lookup tables for business format conversion
