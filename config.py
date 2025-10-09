@@ -11,7 +11,7 @@ INSTRUCTIONS:
 
 # Path to directory containing EDI files (.d, .edi, .txt, .x12 files)
 # CHANGE THIS PATH TO YOUR EDI FILES DIRECTORY:
-EDI_DIRECTORY = "/path/to/your/edi/files"
+EDI_DIRECTORY =""
 
 # Alternative examples:
 # EDI_DIRECTORY = "C:/Users/YourName/Documents/EDI_Files"        # Windows
