@@ -10,16 +10,18 @@ import uuid
 import pandas as pd
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
-# Import configuration
-try:
-    from config import EDI_DIRECTORY, MAX_FILES, EDI_FILE_EXTENSIONS
-except ImportError:
-    print("Warning: config.py not found. Using default settings.")
-    EDI_DIRECTORY = None
-    MAX_FILES = 1000
-    EDI_FILE_EXTENSIONS = ('.d', '.edi', '.txt', '.x12')
-    EDI_FILE_EXTENSIONS = ('.d', '.edi', '.txt', '.x12')
+# Import configuration from config.py
+import config
+
+# Use configuration from config.py
+EDI_DIRECTORY = config.EDI_DIRECTORY
+MAX_FILES = config.MAX_FILES
+EDI_FILE_EXTENSIONS = config.EDI_FILE_EXTENSIONS
+
+# Debug: Print what we're reading from config
+print(f"DEBUG: Reading from config.py - EDI_DIRECTORY = {EDI_DIRECTORY}")
 
 class EDI837BusinessParser:
     def __init__(self):
@@ -240,6 +242,38 @@ class EDI837BusinessParser:
             'XX': 'Health Care Financing Administration National Provider Identifier',
             'ZZ': 'Mutually Defined'
         }
+
+        # EDI Constants for dynamic extraction
+        self.NPI_QUALIFIER = "XX"
+        self.INDIVIDUAL_ENTITY_TYPE = "1"
+        self.BUSINESS_ENTITY_TYPE = "2"
+        self.TAX_ID_QUALIFIERS = ["EI", "TJ"]
+        self.NPI_IDENTIFICATION_TYPE = "NPI"
+        
+        # Entity role constants
+        self.REFERRING_PROVIDER_ROLE = "REFERRING_PROVIDER"
+        self.RENDERING_PROVIDER_ROLE = "RENDERING_PROVIDER"
+        self.SERVICE_FACILITY_ROLE = "SERVICE_FACILITY"
+        
+        # Object type constants
+        self.CLAIM_OBJECT_TYPE = "CLAIM"
+        self.CHARGEABLE_IDENTIFIER_TYPE = "CHARGEABLE"
+        self.PLACE_OF_SERVICE_SUBTYPE = "PLACE_OF_SERVICE"
+        self.FREQUENCY_CODE_SUBTYPE = "FREQUENCY_CODE"
+
+    def format_amount(self, amount_str):
+        """Format monetary amount to preserve up to 6 decimal places without rounding"""
+        if not amount_str or amount_str == "":
+            return ""
+        
+        try:
+            # Convert to Decimal to preserve precision
+            decimal_amount = Decimal(str(amount_str))
+            # Format to string with up to 6 decimal places, removing trailing zeros
+            formatted = format(decimal_amount, '.6f').rstrip('0').rstrip('.')
+            return formatted
+        except (ValueError, TypeError):
+            return str(amount_str)
 
     def parse_isa_segment(self, elements):
         """Parse Interchange Control Header"""
@@ -640,7 +674,7 @@ class EDI837BusinessParser:
         return {
             "provider_name": provider_data.get("name_last_or_organization", ""),
             "provider_type": self.get_business_description(provider_data.get("entity_identifier_code", ""), "entity_identifier"),
-            "npi": provider_data.get("identification_code", "") if provider_data.get("identification_code_qualifier") == "XX" else "",
+            "npi": provider_data.get("identification_code", "") if provider_data.get("identification_code_qualifier") == self.NPI_QUALIFIER else "",
             "tax_id": provider_data.get("tax_identification_number", ""),
             "address": provider_data.get("address", {}),
             "contact_info": provider_data.get("contact_info", {}),
@@ -689,13 +723,13 @@ class EDI837BusinessParser:
         return {
             "id": str(uuid.uuid4()).replace('-', ''),
             "controlNumber": st.get("transaction_set_control_number", ""),
-            "transactionType": "PROF",
+            "transactionType": st.get("transaction_set_identifier_code", ""),
             "hierarchicalStructureCode": bht.get("hierarchical_structure_code", ""),
             "purposeCode": bht.get("transaction_set_purpose_code", ""),
             "originatorApplicationTransactionId": bht.get("reference_identification", ""),
             "creationDate": self.format_date_iso(bht.get("date", "")),
             "creationTime": self.format_time_iso(bht.get("time", "")),
-            "claimOrEncounterIdentifierType": "CHARGEABLE",
+            "claimOrEncounterIdentifierType": self.CHARGEABLE_IDENTIFIER_TYPE,
             "transactionSetIdentifierCode": st.get("transaction_set_identifier_code", ""),
             "implementationConventionReference": st.get("implementation_convention_reference", ""),
             "fileInfo": {"fileType": "EDI"},
@@ -711,7 +745,7 @@ class EDI837BusinessParser:
         
         entity = {
             "entityRole": role,
-            "entityType": "INDIVIDUAL" if entity_data.get("entity_type_qualifier") == "1" else "BUSINESS",
+            "entityType": "INDIVIDUAL" if entity_data.get("entity_type_qualifier") == self.INDIVIDUAL_ENTITY_TYPE else "BUSINESS",
             "identificationType": self.get_identification_type(entity_data.get("identification_code_qualifier", "")),
             "identifier": entity_data.get("identification_code", ""),
             "lastNameOrOrgName": entity_data.get("name_last_or_organization", "")
@@ -745,18 +779,22 @@ class EDI837BusinessParser:
             return {}
         
         provider = {
-            "entityRole": "BILLING_PROVIDER",
-            "entityType": "INDIVIDUAL" if provider_data.get("entity_type_qualifier") == "1" else "BUSINESS",
+            "entityRole": self.get_entity_role(provider_data.get("entity_identifier_code", "")),
+            "entityType": "INDIVIDUAL" if provider_data.get("entity_type_qualifier") == self.INDIVIDUAL_ENTITY_TYPE else "BUSINESS",
             "identificationType": self.get_identification_type(provider_data.get("identification_code_qualifier", "")),
             "identifier": provider_data.get("identification_code", ""),
             "lastNameOrOrgName": provider_data.get("name_last_or_organization", "")
         }
         
-        # Add tax ID if available from references
+        # Add tax ID if available from references or provider_info
         if provider_data.get("references"):
             for ref in provider_data["references"]:
-                if ref.get("reference_identification_qualifier") == "EI":
+                if ref.get("reference_identification_qualifier") in self.TAX_ID_QUALIFIERS:
                     provider["taxId"] = ref.get("reference_identification", "")
+                    provider["taxIdQualifier"] = ref.get("reference_identification_qualifier", "")
+        elif provider_data.get("provider_info", {}).get("tax_identification_number"):
+            provider["taxId"] = provider_data["provider_info"]["tax_identification_number"]
+            provider["taxIdQualifier"] = provider_data["provider_info"].get("tax_identification_qualifier", "")
         
         # Add address
         if provider_data.get("address"):
@@ -783,8 +821,8 @@ class EDI837BusinessParser:
             "claimFilingIndicatorCode": subscriber_data.get("claim_filing_indicator_code", "CI"),
             "insurancePlanType": self.get_insurance_type(subscriber_data.get("insurance_type_code", "")),
             "person": {
-                "entityRole": "INSURED_SUBSCRIBER",
-                "entityType": "INDIVIDUAL",
+                "entityRole": self.get_entity_role(subscriber_data.get("entity_identifier_code", "")),
+                "entityType": "INDIVIDUAL" if subscriber_data.get("entity_type_qualifier") == self.INDIVIDUAL_ENTITY_TYPE else "BUSINESS",
                 "identificationType": self.get_identification_type(subscriber_data.get("identification_code_qualifier", "")),
                 "identifier": subscriber_data.get("identification_code", ""),
                 "lastNameOrOrgName": subscriber_data.get("name_last_or_organization", ""),
@@ -818,8 +856,8 @@ class EDI837BusinessParser:
             return {}
         
         payer = {
-            "entityRole": "PAYER",
-            "entityType": "BUSINESS",
+            "entityRole": self.get_entity_role(payer_data.get("entity_identifier_code", "")),
+            "entityType": "INDIVIDUAL" if payer_data.get("entity_type_qualifier") == self.INDIVIDUAL_ENTITY_TYPE else "BUSINESS",
             "identificationType": self.get_identification_type(payer_data.get("identification_code_qualifier", "")),
             "identifier": payer_data.get("identification_code", ""),
             "lastNameOrOrgName": payer_data.get("name_last_or_organization", "")
@@ -869,41 +907,41 @@ class EDI837BusinessParser:
                     break
         
         # Get place of service from claim info first, then service lines
-        place_of_service_code = claim_info.get("place_of_service_code", "11")
+        place_of_service_code = claim_info.get("place_of_service_code", "")
         if not place_of_service_code or place_of_service_code == "":
             if claim_data.get("service_lines"):
                 first_service = claim_data["service_lines"][0]
                 service_info = first_service.get("service_info", {})
-                place_of_service_code = service_info.get("place_of_service_code", "11")
+                place_of_service_code = service_info.get("place_of_service_code", "")
         
         # Get frequency code from claim info
-        frequency_code = claim_info.get("claim_frequency_type_code", "1")
+        frequency_code = claim_info.get("claim_frequency_type_code", "")
         if not frequency_code or frequency_code == "":
-            frequency_code = "1"  # Default to original
+            frequency_code = ""  # Extract from EDI, don't default
         
         claim = {
-            "id": str(uuid.uuid4()).replace('-', ''),
-            "objectType": "CLAIM",
+            "id": claim_info.get("claim_submitter_identifier", str(uuid.uuid4()).replace('-', '')),
+            "objectType": self.CLAIM_OBJECT_TYPE,
             "patientControlNumber": claim_info.get("claim_submitter_identifier", ""),
-            "chargeAmount": float(claim_info.get("monetary_amount", "0")) if claim_info.get("monetary_amount") else 0.0,
+            "chargeAmount": self.format_amount(claim_info.get("monetary_amount", "")),
             "facilityCode": {
-                "subType": "PLACE_OF_SERVICE",
+                "subType": self.PLACE_OF_SERVICE_SUBTYPE,
                 "code": place_of_service_code
             },
-            "placeOfServiceType": self.place_of_service_codes.get(place_of_service_code, "OFFICE"),
+            "placeOfServiceType": self.place_of_service_codes.get(place_of_service_code, place_of_service_code),
             "frequencyCode": {
-                "subType": "FREQUENCY_CODE",
+                "subType": self.FREQUENCY_CODE_SUBTYPE,
                 "code": frequency_code,
-                "desc": self.frequency_codes.get(frequency_code, {}).get("desc", "Original")
+                "desc": self.frequency_codes.get(frequency_code, {}).get("desc", frequency_code)
             },
             "serviceDateFrom": service_date_from,
             "serviceDateTo": service_date_to,
             "subscriber": subscriber_info,
             "payer": payer_info,
-            "providerSignatureIndicator": "Y" if claim_info.get("patient_signature_source_code") else "N",
+            "providerSignatureIndicator": claim_info.get("patient_signature_source_code", ""),
             "assignmentParticipationCode": claim_info.get("provider_accept_assignment_code", ""),
-            "assignmentCertificationIndicator": "Y" if claim_info.get("yes_no_condition_response_code") == "Y" else "N",
-            "releaseOfInformationCode": "Y" if claim_info.get("release_of_information_code") == "Y" else "N",
+            "assignmentCertificationIndicator": claim_info.get("yes_no_condition_response_code", ""),
+            "releaseOfInformationCode": claim_info.get("release_of_information_code", ""),
             "originalReferenceNumber": f"CP{transaction_info.get('originatorApplicationTransactionId', '')}{claim_info.get('claim_submitter_identifier', '')}",
             "billingProvider": billing_provider,
             "providers": [],
@@ -940,15 +978,19 @@ class EDI837BusinessParser:
             return None
         
         provider_info = provider_data.get("provider_data", {})
+        # Use the entity identifier code directly or map it
+        entity_code = provider_data.get("provider_role", "")
         role_map = {
-            "REFERRING": "REFERRING",
-            "RENDERING": "RENDERING", 
-            "SERVICE_FACILITY": "SERVICE_FACILITY"
+            "DN": "REFERRING_PROVIDER",
+            "82": "RENDERING_PROVIDER", 
+            "77": "SERVICE_FACILITY",
+            "DQ": "SUPERVISING_PROVIDER",
+            "85": "BILLING_PROVIDER"
         }
         
         provider = {
-            "entityRole": role_map.get(provider_data.get("provider_role", ""), "RENDERING"),
-            "entityType": "INDIVIDUAL" if provider_info.get("entity_type_qualifier") == "1" else "BUSINESS",
+            "entityRole": role_map.get(entity_code, entity_code),
+            "entityType": "INDIVIDUAL" if provider_info.get("entity_type_qualifier") == self.INDIVIDUAL_ENTITY_TYPE else "BUSINESS",
             "identificationType": self.get_identification_type(provider_info.get("identification_code_qualifier", "")),
             "identifier": provider_info.get("identification_code", ""),
             "lastNameOrOrgName": provider_info.get("name_last_or_organization", "")
@@ -1030,12 +1072,12 @@ class EDI837BusinessParser:
         
         service_line = {
             "sourceLineId": str(uuid.uuid4()).replace('-', '')[:10],
-            "chargeAmount": float(service_info.get("monetary_amount", "0")) if service_info.get("monetary_amount") else 0.0,
+            "chargeAmount": self.format_amount(service_info.get("monetary_amount", "")),
             "serviceDateFrom": "",
-            "unitType": "UNIT",
-            "unitCount": int(service_info.get("service_unit_count", "1")) if service_info.get("service_unit_count") else 1,
+            "unitType": service_info.get("unit_or_basis_for_measurement_code", ""),
+            "unitCount": int(service_info.get("service_unit_count", "0")) if service_info.get("service_unit_count") else 0,
             "procedure": {
-                "subType": "CPT",
+                "subType": procedure_info.get("product_service_id_qualifier", ""),
                 "code": procedure_code,
                 "desc": self.procedure_descriptions.get(procedure_code, "")
             },
@@ -1076,7 +1118,12 @@ class EDI837BusinessParser:
 
     def get_communication_type(self, qualifier):
         """Map communication qualifier to type"""
-        return "PHONE" if qualifier in ["TE", "WP"] else "EMAIL" if qualifier == "EM" else "PHONE"
+        comm_map = {
+            "TE": "PHONE",
+            "WP": "PHONE", 
+            "EM": "EMAIL"
+        }
+        return comm_map.get(qualifier, qualifier)
 
     def get_payer_sequence(self, code):
         """Map payer sequence code"""
@@ -1088,7 +1135,7 @@ class EDI837BusinessParser:
             "B": "AUTO_NO_FAULT",
             "C": "AUTO_LIABILITY"
         }
-        return sequence_map.get(code, "PRIMARY")
+        return sequence_map.get(code, code)
 
     def get_relationship_type(self, code):
         """Map relationship code"""
@@ -1103,11 +1150,34 @@ class EDI837BusinessParser:
             "53": "LIFE_PARTNER",
             "G8": "OTHER_RELATIONSHIP"
         }
-        return relationship_map.get(code, "SELF")
+        return relationship_map.get(code, code)
 
     def get_insurance_type(self, code):
         """Map insurance type code"""
-        return "COMMERCIAL" if code in ["CI", "12", "13"] else "MEDICARE" if code == "MA" else "MEDICAID" if code == "MC" else "COMMERCIAL"
+        insurance_map = {
+            "CI": "COMMERCIAL",
+            "12": "COMMERCIAL", 
+            "13": "COMMERCIAL",
+            "MA": "MEDICARE",
+            "MB": "MEDICARE",
+            "MC": "MEDICAID"
+        }
+        return insurance_map.get(code, code)
+
+    def get_entity_role(self, entity_code):
+        """Map entity identifier code to role"""
+        role_map = {
+            "85": "BILLING_PROVIDER",
+            "IL": "INSURED_SUBSCRIBER", 
+            "PR": "PAYER",
+            "DN": "REFERRING_PROVIDER",
+            "82": "RENDERING_PROVIDER",
+            "77": "SERVICE_FACILITY",
+            "DQ": "SUPERVISING_PROVIDER",
+            "71": "ATTENDING_PROVIDER",
+            "72": "OPERATING_PROVIDER"
+        }
+        return role_map.get(entity_code, entity_code)
 
     def get_reference_type(self, qualifier):
         """Map reference qualifier to type"""
@@ -1169,7 +1239,7 @@ class EDI837BusinessParser:
                 "file_info": {
                     "file_path": file_path,
                     "file_name": os.path.basename(file_path),
-                    "processed_date": datetime.now().isoformat()
+                    "processed_date": ""
                 },
                 "interchange_header": {},
                 "functional_group": {},
@@ -1285,11 +1355,11 @@ class EDI837BusinessParser:
                             current_subscriber["patient_info"]["patient_data"] = nm1_data
                         elif entity_code in ["DN", "82", "77", "DQ", "85"] and current_claim:  # Loop 2310 - Various provider types
                             provider_role_map = {
-                                "DN": "REFERRING",      # Loop 2310A - Referring Provider
-                                "82": "RENDERING",      # Loop 2310B - Rendering Provider  
+                                "DN": "REFERRING_PROVIDER",      # Loop 2310A - Referring Provider
+                                "82": "RENDERING_PROVIDER",      # Loop 2310B - Rendering Provider  
                                 "77": "SERVICE_FACILITY", # Loop 2310C - Service Facility
-                                "DQ": "SUPERVISING",    # Loop 2310D - Supervising Provider
-                                "85": "BILLING"         # Loop 2310E - Billing Provider (if different)
+                                "DQ": "SUPERVISING_PROVIDER",    # Loop 2310D - Supervising Provider
+                                "85": "BILLING_PROVIDER"         # Loop 2310E - Billing Provider (if different)
                             }
                             provider_info = {
                                 "provider_role": provider_role_map.get(entity_code, ""),
@@ -1336,9 +1406,10 @@ class EDI837BusinessParser:
                             if "references" not in current_claim["providers"][-1]:
                                 current_claim["providers"][-1]["references"] = []
                             current_claim["providers"][-1]["references"].append(ref_data)
-                        elif current_billing_provider and ref_data.get("reference_identification_qualifier") == "EI":
+                        elif current_billing_provider and ref_data.get("reference_identification_qualifier") in self.TAX_ID_QUALIFIERS:
                             # Tax ID for billing provider
                             current_billing_provider["provider_info"]["tax_identification_number"] = ref_data.get("reference_identification", "")
+                            current_billing_provider["provider_info"]["tax_identification_qualifier"] = ref_data.get("reference_identification_qualifier", "")
                         elif current_subscriber:
                             if "references" not in current_subscriber["subscriber_info"]:
                                 current_subscriber["subscriber_info"]["references"] = []
@@ -1492,86 +1563,56 @@ class EDI837BusinessParser:
             print(f"Error parsing file {file_path}: {str(e)}")
             return None
 
-def find_edi_directories():
-    """Find directories containing EDI files"""
-    current_dir = os.getcwd()
-    edi_directories = []
-    
-    # Look for directories with "TOIH" or "837" in the name in current dir and subdirs
-    search_dirs = [current_dir]
-    
-    # Add subdirectories to search
-    for item in os.listdir(current_dir):
-        item_path = os.path.join(current_dir, item)
-        if os.path.isdir(item_path):
-            search_dirs.append(item_path)
-    
-    for search_dir in search_dirs:
-        try:
-            for item in os.listdir(search_dir):
-                item_path = os.path.join(search_dir, item)
-                if os.path.isdir(item_path):
-                    if "TOIH" in item or "837" in item:
-                        # Count EDI files in directory
-                        edi_files = []
-                        try:
-                            for file in os.listdir(item_path):
-                                if file.endswith(('.d', '.edi', '.txt', '.x12')):
-                                    edi_files.append(file)
-                            
-                            if edi_files:
-                                edi_directories.append({
-                                    'path': item_path,
-                                    'name': item,
-                                    'file_count': len(edi_files)
-                                })
-                        except PermissionError:
-                            continue
-        except PermissionError:
-            continue
-    
-    return edi_directories
+# Removed find_edi_directories() function - no longer needed with path-based configuration
 
 def main():
     """Main execution function"""
     parser = EDI837BusinessParser()
     
-    # Find EDI directories
-    edi_directories = find_edi_directories()
+    # Use the configured directory path from config.py
+    edi_directory = EDI_DIRECTORY
+    print(f"Using EDI directory from config: {edi_directory}")
     
-    if not edi_directories:
-        print("No EDI directories found in current directory")
+    # Check if directory exists
+    if not os.path.exists(edi_directory):
+        print(f"❌ EDI directory not found: {edi_directory}")
+        print("Please update EDI_DIRECTORY in config.py with the correct path to your EDI files")
         return
+    
+    # Get list of EDI files
+    edi_files = []
+    try:
+        for file in os.listdir(edi_directory):
+            if file.endswith(EDI_FILE_EXTENSIONS):
+                edi_files.append(os.path.join(edi_directory, file))
+    except PermissionError:
+        print(f"❌ Permission denied accessing directory: {edi_directory}")
+        return
+    
+    if not edi_files:
+        print(f"❌ No EDI files found in directory: {edi_directory}")
+        print(f"Looking for files with extensions: {EDI_FILE_EXTENSIONS}")
+        return
+    
+    print(f"✅ Found {len(edi_files)} EDI files in: {edi_directory}")
     
     all_business_data = []
     total_claims_extracted = 0
     
-    for edi_dir in edi_directories:
-        print(f"Found TOIH directory: {edi_dir['path']} with {edi_dir['file_count']} EDI files")
-        print(f"Extracting EDI 837 data in business format from: {edi_dir['name']}")
-        
-        # Get list of EDI files
-        edi_files = []
-        try:
-            for file in os.listdir(edi_dir['path']):
-                if file.endswith(('.d', '.edi', '.txt', '.x12')):
-                    edi_files.append(os.path.join(edi_dir['path'], file))
-        except PermissionError:
-            print(f"Permission denied accessing {edi_dir['path']}")
-            continue
-        
-        print(f"Found {len(edi_files)} EDI files to process")
-        
-        # Process 1000 files as requested
-        max_files = 1000
-        if len(edi_files) > max_files:
-            print(f"Will process {max_files} files out of {len(edi_files)} total files")
-            edi_files = edi_files[:max_files]
-        else:
-            print(f"Will process all {len(edi_files)} files")
-        
-        # Process each file
-        for i, file_path in enumerate(edi_files, 1):
+    # Process files from the single configured directory
+    print(f"Extracting EDI 837 data in business format from: {edi_directory}")
+    
+    # Limit files if configured
+    max_files = MAX_FILES or len(edi_files)
+    if len(edi_files) > max_files:
+        print(f"Will process {max_files} files out of {len(edi_files)} total files")
+        edi_files = edi_files[:max_files]
+    else:
+        print(f"Will process all {len(edi_files)} files")
+    
+    # Process each file
+    for i, file_path in enumerate(edi_files, 1):
+
             try:
                 print(f"Processing {os.path.basename(file_path)}... ({i}/{len(edi_files)})")
                 
@@ -1594,7 +1635,7 @@ def main():
             if i % 10 == 0:
                 print(f"✅ Processed {i} files, extracted {total_claims_extracted} claims so far")
         
-        print(f"Completed processing {min(len(edi_files), max_files)} files")
+    print(f"Completed processing {min(len(edi_files), max_files)} files")
     
     if total_claims_extracted == 0:
         print("No claims extracted")
@@ -1619,10 +1660,12 @@ def main():
         company_setup_records = []
         claim_detail_records = []
         
-        claim_id_counter = 1
         detail_id_counter = 1
         
         for claim in all_business_data:
+            # Get the actual claim ID from the JSON data
+            actual_claim_id = claim.get("id", "")
+            
             transaction = claim.get("transaction", {})
             billing_provider = claim.get("billingProvider", {})
             subscriber = claim.get("subscriber", {}).get("person", {})
@@ -1634,17 +1677,17 @@ def main():
             facility_provider = {}
             
             for provider in claim.get("providers", []):
-                if provider.get("entityRole") == "REFERRING":
+                if provider.get("entityRole") == parser.REFERRING_PROVIDER_ROLE:
                     referring_provider = provider
-                elif provider.get("entityRole") == "RENDERING":
+                elif provider.get("entityRole") == parser.RENDERING_PROVIDER_ROLE:
                     rendering_provider = provider
-                elif provider.get("entityRole") == "SERVICE_FACILITY":
+                elif provider.get("entityRole") == parser.SERVICE_FACILITY_ROLE:
                     facility_provider = provider
             
             # Build EDI_Claims record with all required fields
             claims_record = {
-                'ID': claim_id_counter,
-                'Filename': transaction.get("fileInfo", {}).get("fileType", "") + "-" + str(claim_id_counter) + ".d",
+                'ID': actual_claim_id,
+                'Filename': transaction.get("fileInfo", {}).get("fileName", ""),
                 'Version': transaction.get("implementationConventionReference", ""),
                 'ImageFilePath': None,
                 'ImageFilename': None,
@@ -1652,7 +1695,7 @@ def main():
                 'TradingPartnerID': transaction.get("receiver", {}).get("identifier", ""),
                 'TransactionDate': transaction.get("creationDate", ""),
                 'TransactionTime': transaction.get("creationTime", ""),
-                'ReceiveDate': datetime.now().strftime("%Y-%m-%d"),
+                'ReceiveDate': transaction.get("creationDate", ""),
                 'SubmitterName': transaction.get("sender", {}).get("lastNameOrOrgName", ""),
                 'SubmitterID': transaction.get("sender", {}).get("identifier", ""),
                 'SubmitterContact': transaction.get("sender", {}).get("contacts", [{}])[0].get("name", "") if transaction.get("sender", {}).get("contacts") else "",
@@ -1664,16 +1707,16 @@ def main():
                 'ReceiverID': transaction.get("receiver", {}).get("identifier", ""),
                 'TransactionType': transaction.get("transactionType", ""),
                 'OrigAppTransactionID': transaction.get("originatorApplicationTransactionId", ""),
-                'FedTaxIDQual': "EI",
+                'FedTaxIDQual': billing_provider.get("taxIdQualifier", ""),
                 'FedTaxID': billing_provider.get("taxId", ""),
                 'BillProvIDType': billing_provider.get("identificationType", ""),
                 'BillProvID': billing_provider.get("identifier", ""),
-                'BillProvNPI': billing_provider.get("identifier", "") if billing_provider.get("identificationType") == "NPI" else "",
+                'BillProvNPI': billing_provider.get("identifier", "") if billing_provider.get("identificationType") == parser.NPI_IDENTIFICATION_TYPE else "",
                 'BillProvLast': billing_provider.get("lastNameOrOrgName", ""),
                 'BillProvFirst': billing_provider.get("firstName", ""),
                 'BillProvMiddle': billing_provider.get("middleName", ""),
-                'BillProvSuffix': None,
-                'BillProvSpecialty': None,
+                'BillProvSuffix': billing_provider.get("nameSuffix", ""),
+                'BillProvSpecialty': billing_provider.get("providerTaxonomy", {}).get("code", ""),
                 'BillProvAddress': billing_provider.get("address", {}).get("line", ""),
                 'BillProvAddress2': billing_provider.get("address", {}).get("line2", ""),
                 'BillProvCity': billing_provider.get("address", {}).get("city", ""),
@@ -1700,12 +1743,12 @@ def main():
                 # Subscriber information
                 'SubscriberLast': subscriber.get("lastNameOrOrgName", ""),
                 'SubscriberFirst': subscriber.get("firstName", ""),
-                'SubscriberMiddle': None,
-                'SubscriberSuffix': None,
+                'SubscriberMiddle': subscriber.get("middleName", ""),
+                'SubscriberSuffix': subscriber.get("nameSuffix", ""),
                 'SubscriberIDType': subscriber.get("identificationType", ""),
                 'SubscriberID': subscriber.get("identifier", ""),
                 'SubscriberAddress': subscriber.get("address", {}).get("line", ""),
-                'SubscriberAddress2': None,
+                'SubscriberAddress2': subscriber.get("address", {}).get("line2", ""),
                 'SubscriberCity': subscriber.get("address", {}).get("city", ""),
                 'SubscriberState': subscriber.get("address", {}).get("stateCode", ""),
                 'SubscriberZip': subscriber.get("address", {}).get("zipCode", ""),
@@ -1731,7 +1774,7 @@ def main():
                 'PayerIDType': payer.get("identificationType", ""),
                 'PayerID': payer.get("identifier", ""),
                 'PayerAddress': payer.get("address", {}).get("line", ""),
-                'PayerAddress2': None,
+                'PayerAddress2': payer.get("address", {}).get("line2", ""),
                 'PayerCity': payer.get("address", {}).get("city", ""),
                 'PayerState': payer.get("address", {}).get("stateCode", ""),
                 'PayerZip': payer.get("address", {}).get("zipCode", ""),
@@ -1752,7 +1795,7 @@ def main():
                 # Rendering Provider
                 'RendProvIDType': rendering_provider.get("identificationType", ""),
                 'RendProvID': rendering_provider.get("identifier", ""),
-                'RendProvNPI': rendering_provider.get("identifier", "") if rendering_provider.get("identificationType") == "NPI" else "",
+                'RendProvNPI': rendering_provider.get("identifier", "") if rendering_provider.get("identificationType") == parser.NPI_IDENTIFICATION_TYPE else "",
                 'RendProvTaxID': None,
                 'RendProvLast': rendering_provider.get("lastNameOrOrgName", ""),
                 'RendProvFirst': rendering_provider.get("firstName", ""),
@@ -1770,7 +1813,7 @@ def main():
                 'FacilityType': facility_provider.get("entityType", ""),
                 'FacilityIDType': facility_provider.get("identificationType", ""),
                 'FacilityID': facility_provider.get("identifier", ""),
-                'FacilityNPI': facility_provider.get("identifier", "") if facility_provider.get("identificationType") == "NPI" else "",
+                'FacilityNPI': facility_provider.get("identifier", "") if facility_provider.get("identificationType") == parser.NPI_IDENTIFICATION_TYPE else "",
                 'FacilityTaxID': None,
                 'FacilityOtherIDQual1': facility_provider.get("additionalIds", [{}])[0].get("qualifierCode", "") if facility_provider.get("additionalIds") else "",
                 'FacilityOtherID1': facility_provider.get("additionalIds", [{}])[0].get("identification", "") if facility_provider.get("additionalIds") else "",
@@ -1797,7 +1840,7 @@ def main():
                 'RefProvIDType': referring_provider.get("identificationType", ""),
                 'RefProvID': referring_provider.get("identifier", ""),
                 'RefProvTaxID': None,
-                'RefProvNPI': referring_provider.get("identifier", "") if referring_provider.get("identificationType") == "NPI" else "",
+                'RefProvNPI': referring_provider.get("identifier", "") if referring_provider.get("identificationType") == parser.NPI_IDENTIFICATION_TYPE else "",
                 'RefProvOtherIDQual1': None,
                 'RefProvOtherID1': None,
                 'RefProvOtherIDQual2': None,
@@ -1995,7 +2038,7 @@ def main():
             for service_line in claim.get("serviceLines", []):
                 detail_record = {
                     'ID': detail_id_counter,
-                    'ClaimID': claim_id_counter,
+                    'ClaimID': actual_claim_id,
                     'LineNumber': detail_id_counter,
                     'ServiceDateFrom': service_line.get("serviceDateFrom", ""),
                     'ServiceDateTo': None,
@@ -2177,8 +2220,6 @@ def main():
                 
                 claim_detail_records.append(detail_record)
                 detail_id_counter += 1
-            
-            claim_id_counter += 1
         
         # Save the three CSV files
         if claims_records:
